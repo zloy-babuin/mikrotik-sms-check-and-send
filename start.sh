@@ -1,5 +1,5 @@
 #!/bin/bash
-
+cd "$(dirname "$0")"
 # Активируем виртуальную среду
 source venv/bin/activate
 
