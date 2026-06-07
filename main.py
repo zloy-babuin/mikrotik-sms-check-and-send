@@ -7,6 +7,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
 import paramiko
+import datetime
 
 load_dotenv()
 
@@ -19,6 +20,10 @@ FILE_NAME = "messages.json"
 GMAIL_USER = os.getenv('GMAIL_USER')
 GMAIL_PASSWORD = os.getenv('GMAIL_PASSWORD')
 EMAIL_TO = os.getenv('EMAIL_TO')
+
+def print_message(message):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"{timestamp} - {message}")
 
 if not host or not username or not password:
     raise ValueError("Необходимо заполнить все поля для MikroTik в файле .env")
@@ -89,9 +94,9 @@ def send_email_notification(new_messages):
         server.login(GMAIL_USER, GMAIL_PASSWORD)
         server.sendmail(GMAIL_USER, EMAIL_TO, msg.as_string())
         server.quit()
-        print("Уведомление на email успешно отправлено.")
+        print_message("Уведомление на email успешно отправлено.")
     except Exception as email_err:
-        print(f"Ошибка при отправке почты: {email_err}")
+        print_message(f"Ошибка при отправке почты: {email_err}")
 
 def save_and_process_sms(new_sms_list, file_path):
     """Сохраняет уникальные СМС в файл и инициирует отправку почты"""
@@ -104,7 +109,7 @@ def save_and_process_sms(new_sms_list, file_path):
                 existing_sms = json.load(f)
                 existing_hashes = {item['hash'] for item in existing_sms if 'hash' in item}
         except Exception as e:
-            print(f"Предупреждение: не удалось прочитать {file_path} ({e}).")
+            print_message(f"Предупреждение: не удалось прочитать {file_path} ({e}).")
 
     # Отбираем только те сообщения, которых у нас еще не было
     fresh_sms_detected = []
@@ -118,12 +123,12 @@ def save_and_process_sms(new_sms_list, file_path):
         # Записываем обновленный массив в файл
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(existing_sms, f, ensure_ascii=False, indent=4)
-        print(f"Успешно добавлено новых сообщений в локальный файл: {len(fresh_sms_detected)}")
+        print_message(f"Успешно добавлено новых сообщений в локальный файл: {len(fresh_sms_detected)}")
         
         # Отправляем только действительно новые сообщения на email
         send_email_notification(fresh_sms_detected)
     else:
-        print("Новых уникальных сообщений нет. Отправка почты не требуется.")
+        print_message("Новых уникальных сообщений нет. Отправка почты не требуется.")
         
     return existing_sms
 
