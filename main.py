@@ -69,16 +69,15 @@ def generate_hash(sms_dict):
     hash_string = f"{sms_dict['sender']}_{sms_dict['timestamp']}_{sms_dict['text']}"
     return hashlib.md5(hash_string.encode('utf-8')).hexdigest()
 
-def send_email_notification(new_messages):
-    """Отправляет email с новыми СМС через SMTP сервер Gmail"""
+def send_email_notification(messages_to_send):
+    """Отправляет email с СМС через SMTP сервер Gmail. Возвращает True при успехе."""
     msg = MIMEMultipart()
     msg['From'] = GMAIL_USER
     msg['To'] = EMAIL_TO
-    msg['Subject'] = f"Новые SMS с MikroTik ({len(new_messages)} шт.)"
+    msg['Subject'] = f"Новые SMS с MikroTik ({len(messages_to_send)} шт.)"
 
-    # Формируем читаемый текст письма
-    body = "Обнаружены новые входящие сообщения:\n\n"
-    for i, sms in enumerate(new_messages, start=1):
+    body = "Обнаружены неотправленные входящие сообщения:\n\n"
+    for i, sms in enumerate(messages_to_send, start=1):
         body += f"{i}. Отправитель: {sms['sender']}\n"
         body += f"   Время: {sms['timestamp']}\n"
         body += f"   Текст: {sms['text']}\n"
@@ -88,18 +87,20 @@ def send_email_notification(new_messages):
     msg.attach(MIMEText(body, 'plain', 'utf-8'))
 
     try:
-        # Подключаемся к SMTP-серверу Gmail (порт 587 с последующим TLS)
         server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()  # Шифруем соединение
+        server.starttls()
         server.login(GMAIL_USER, GMAIL_PASSWORD)
         server.sendmail(GMAIL_USER, EMAIL_TO, msg.as_string())
         server.quit()
         print_message("Уведомление на email успешно отправлено.")
+        return True
     except Exception as email_err:
         print_message(f"Ошибка при отправке почты: {email_err}")
+        return False
 
-def save_and_process_sms(new_sms_list, file_path):
-    """Сохраняет уникальные СМС в файл и инициирует отправку почты"""
+def sync_sms_to_file(new_sms_list, file_path):
+    """Только сохраняет новые уникальные СМС в файл с sent_at = null.
+    Для старых записей без флага sent_at форсирует его в null."""
     existing_sms = []
     existing_hashes = set()
 
@@ -107,30 +108,68 @@ def save_and_process_sms(new_sms_list, file_path):
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 existing_sms = json.load(f)
+                
+                # Защита: если у старой записи в файле нет ключа sent_at, ставим null
+                for item in existing_sms:
+                    if 'sent_at' not in item:
+                        item['sent_at'] = None
+                        
                 existing_hashes = {item['hash'] for item in existing_sms if 'hash' in item}
         except Exception as e:
             print_message(f"Предупреждение: не удалось прочитать {file_path} ({e}).")
 
-    # Отбираем только те сообщения, которых у нас еще не было
-    fresh_sms_detected = []
+    fresh_count = 0
     for sms in new_sms_list:
         if sms['hash'] not in existing_hashes:
+            # Инициализируем новые сообщения с флагом null
+            sms['sent_at'] = None
             existing_sms.append(sms)
             existing_hashes.add(sms['hash'])
-            fresh_sms_detected.append(sms)
+            fresh_count += 1
 
-    if fresh_sms_detected:
-        # Записываем обновленный массив в файл
+    if fresh_count > 0 or any(item['sent_at'] is None for item in existing_sms):
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(existing_sms, f, ensure_ascii=False, indent=4)
-        print_message(f"Успешно добавлено новых сообщений в локальный файл: {len(fresh_sms_detected)}")
+        if fresh_count > 0:
+            print_message(f"Добавлено новых СМС в базу (ожидают отправки): {fresh_count}")
+            
+    return file_path
+
+def process_email_queue(file_path):
+    """Ищет в файле все сообщения с sent_at == null, отправляет их и обновляет статус в файле"""
+    if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+        return
+
+    with open(file_path, 'r', encoding='utf-8') as f:
+        all_sms = json.load(f)
+
+    # Отбираем всё, у чего sent_at равен null (или отсутствует)
+    queue = [sms for sms in all_sms if sms.get('sent_at') is None]
+
+    if not queue:
+        print_message("Нет сообщений для отправки почты.")
+        return
+
+    print_message(f"Найдено сообщений для отправки: {len(queue)}")
+    
+    # Пытаемся отправить
+    if send_email_notification(queue):
+        # Если отправка прошла успешно, проставляем таймстамп отправки для ВСЕХ отправленных сообщений
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Отправляем только действительно новые сообщения на email
-        send_email_notification(fresh_sms_detected)
+        # Создаем мапу для быстрого поиска хэшей, которые были в этой пачке
+        sent_hashes = {sms['hash'] for sms in queue}
+        
+        for sms in all_sms:
+            if sms['hash'] in sent_hashes:
+                sms['sent_at'] = now_str
+                
+        # Пишем обновленный статус обратно в файл
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(all_sms, f, ensure_ascii=False, indent=4)
+        print_message("Статус сообщений в базе обновлен на 'отправлено'.")
     else:
-        print_message("Новых уникальных сообщений нет. Отправка почты не требуется.")
-        
-    return existing_sms
+        print_message("Отправка сорвалась. Сообщения попробуют отправиться при следующем запуске скрипта.")
 
 # --- Основной цикл выполнения ---
 ssh = paramiko.SSHClient()
@@ -190,8 +229,11 @@ try:
     for sms in merged_sms_list:
         sms['hash'] = generate_hash(sms)
     
-    # Обрабатываем сохранение и отправку уведомлений
-    final_file_state = save_and_process_sms(merged_sms_list, FILE_NAME)
+    # 1. Сначала просто синхронизируем базу и складываем новые СМС со статусом "sent_at": null
+    sync_sms_to_file(merged_sms_list, FILE_NAME)
+    
+    # 2. Обрабатываем очередь отправки на email на основе флагов из файла
+    process_email_queue(FILE_NAME)
 
 except Exception as e:
     error_json = json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)

@@ -1,0 +1,30 @@
+name: Local Assistant
+version: 1.0.0
+schema: v1
+models:
+  - name: Ollama Chat
+    provider: openai  # Меняем провайдера, чтобы включить поддержку инструментов
+    model: gemma-4-12B-it-gguf:Q4_K_M
+    apiBase: http://192.168.1.15:11434/v1  # Добавляем /v1 в конец
+    contextLength: 16384  # Явно расширяем контекст, для агента это критично
+    requestOptions:
+      extraBody:
+        num_ctx: 16384  # Заставляем Ollama выделить под модель больше памяти
+
+tabAutocompleteModel:
+  name: Ollama Autocomplete
+  provider: ollama  # Для автодополнения по табу оставляем ollama, тут агент не нужен
+  model: gemma-4-12B-it-gguf:Q4_K_M
+  apiBase: http://192.168.1.15:11434
+  contextLength: 4096
+
+context:
+  - provider: code
+  - provider: docs
+  - provider: diff
+  - provider: terminal
+  - provider: problems
+  - provider: folder
+  - provider: codebase
+
+#gemma-4-12B-it-gguf:Q4_K_M
