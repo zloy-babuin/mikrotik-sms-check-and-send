@@ -21,6 +21,14 @@ GMAIL_USER = os.getenv('GMAIL_USER')
 GMAIL_PASSWORD = os.getenv('GMAIL_PASSWORD')
 EMAIL_TO = os.getenv('EMAIL_TO')
 
+# Данные для Rambler (fallback)
+RAMBLER_USER = os.getenv('RAMBLER_USER')
+RAMBLER_PASSWORD = os.getenv('RAMBLER_PASSWORD')
+RAMBLER_SENDER_NAME = os.getenv('RAMBLER_SENDER_NAME')
+RAMBLER_SMTP_SERVER = os.getenv('RAMBLER_SMTP_SERVER')
+RAMBLER_SMTP_PORT = os.getenv('RAMBLER_SMTP_PORT')
+RAMBLER_SMTP_USE_SSL = os.getenv('RAMBLER_SMTP_USE_SSL')
+
 def print_message(message):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"{timestamp} - {message}")
@@ -70,9 +78,8 @@ def generate_hash(sms_dict):
     return hashlib.md5(hash_string.encode('utf-8')).hexdigest()
 
 def send_email_notification(messages_to_send):
-    """Отправляет email с СМС через SMTP сервер Gmail. Возвращает True при успехе."""
+    """Отправляет email с СМС через SMTP сервер Gmail или Rambler (в случае неудачи)"""
     msg = MIMEMultipart()
-    msg['From'] = GMAIL_USER
     msg['To'] = EMAIL_TO
     msg['Subject'] = f"Новые SMS с MikroTik ({len(messages_to_send)} шт.)"
 
@@ -86,20 +93,64 @@ def send_email_notification(messages_to_send):
 
     msg.attach(MIMEText(body, 'plain', 'utf-8'))
 
+    def _send_via_smtp(smtp_host, smtp_port, use_ssl, user, pwd, from_addr, to_addr, message_obj):
+        try:
+            # Корректируем заголовок From под конкретный сервер авторизации
+            if 'From' in message_obj:
+                del message_obj['From']
+            message_obj['From'] = from_addr
+            
+            if use_ssl:
+                server = smtplib.SMTP_SSL(smtp_host, int(smtp_port), timeout=30)
+                server.ehlo()
+            else:
+                server = smtplib.SMTP(smtp_host, int(smtp_port), timeout=30)
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+
+            server.login(user, pwd)
+            server.sendmail(from_addr, to_addr, message_obj.as_string())
+            server.quit()
+            return True, None
+        except Exception as err:
+            return False, err
+
+    # Попытка через Gmail
     try:
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(GMAIL_USER, GMAIL_PASSWORD)
-        server.sendmail(GMAIL_USER, EMAIL_TO, msg.as_string())
-        server.quit()
-        print_message("Уведомление на email успешно отправлено.")
-        return True
-    except Exception as email_err:
-        print_message(f"Ошибка при отправке почты: {email_err}")
-        return False
+        ok, err = _send_via_smtp('smtp.gmail.com', 587, False, GMAIL_USER, GMAIL_PASSWORD, GMAIL_USER, EMAIL_TO, msg)
+        if ok:
+            print_message("Уведомление на email успешно отправлено через Gmail.")
+            return True
+        else:
+            print_message(f"Gmail failed: {err}")
+    except Exception as e:
+        print_message(f"Gmail exception: {e}")
+
+    # Если Gmail упал, а параметры для Rambler заполнены — пробуем Rambler
+    if RAMBLER_USER and RAMBLER_PASSWORD and RAMBLER_SMTP_SERVER and RAMBLER_SMTP_PORT:
+        use_ssl = False
+        if RAMBLER_SMTP_USE_SSL:
+            try:
+                use_ssl = RAMBLER_SMTP_USE_SSL.strip().lower() in ('1', 'true', 'yes')
+            except Exception:
+                use_ssl = False
+
+        # Определяем отправителя: имя из env или сам адрес почты
+        rambler_from = RAMBLER_SENDER_NAME if RAMBLER_SENDER_NAME else RAMBLER_USER
+
+        ok, err = _send_via_smtp(RAMBLER_SMTP_SERVER, RAMBLER_SMTP_PORT, use_ssl, RAMBLER_USER, RAMBLER_PASSWORD, rambler_from, EMAIL_TO, msg)
+        if ok:
+            print_message("Уведомление на email успешно отправлено через Rambler.")
+            return True
+        else:
+            print_message(f"Rambler failed: {err}")
+
+    print_message("Ошибка при отправке почты через все настроенные SMTP-сервера.")
+    return False
 
 def sync_sms_to_file(new_sms_list, file_path):
-    """Только сохраняет новые уникальные СМС в файл с sent_at = null.
+    """Сохраняет новые уникальные СМС в файл с sent_at = null.
     Для старых записей без флага sent_at форсирует его в null."""
     existing_sms = []
     existing_hashes = set()
@@ -109,7 +160,6 @@ def sync_sms_to_file(new_sms_list, file_path):
             with open(file_path, 'r', encoding='utf-8') as f:
                 existing_sms = json.load(f)
                 
-                # Защита: если у старой записи в файле нет ключа sent_at, ставим null
                 for item in existing_sms:
                     if 'sent_at' not in item:
                         item['sent_at'] = None
@@ -121,7 +171,6 @@ def sync_sms_to_file(new_sms_list, file_path):
     fresh_count = 0
     for sms in new_sms_list:
         if sms['hash'] not in existing_hashes:
-            # Инициализируем новые сообщения с флагом null
             sms['sent_at'] = None
             existing_sms.append(sms)
             existing_hashes.add(sms['hash'])
@@ -143,7 +192,6 @@ def process_email_queue(file_path):
     with open(file_path, 'r', encoding='utf-8') as f:
         all_sms = json.load(f)
 
-    # Отбираем всё, у чего sent_at равен null (или отсутствует)
     queue = [sms for sms in all_sms if sms.get('sent_at') is None]
 
     if not queue:
@@ -152,19 +200,14 @@ def process_email_queue(file_path):
 
     print_message(f"Найдено сообщений для отправки: {len(queue)}")
     
-    # Пытаемся отправить
     if send_email_notification(queue):
-        # Если отправка прошла успешно, проставляем таймстамп отправки для ВСЕХ отправленных сообщений
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Создаем мапу для быстрого поиска хэшей, которые были в этой пачке
         sent_hashes = {sms['hash'] for sms in queue}
         
         for sms in all_sms:
             if sms['hash'] in sent_hashes:
                 sms['sent_at'] = now_str
                 
-        # Пишем обновленный статус обратно в файл
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(all_sms, f, ensure_ascii=False, indent=4)
         print_message("Статус сообщений в базе обновлен на 'отправлено'.")
@@ -229,10 +272,7 @@ try:
     for sms in merged_sms_list:
         sms['hash'] = generate_hash(sms)
     
-    # 1. Сначала просто синхронизируем базу и складываем новые СМС со статусом "sent_at": null
     sync_sms_to_file(merged_sms_list, FILE_NAME)
-    
-    # 2. Обрабатываем очередь отправки на email на основе флагов из файла
     process_email_queue(FILE_NAME)
 
 except Exception as e:
