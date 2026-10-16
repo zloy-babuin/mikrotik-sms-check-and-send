@@ -21,7 +21,11 @@ GMAIL_USER = os.getenv('GMAIL_USER')
 GMAIL_PASSWORD = os.getenv('GMAIL_PASSWORD')
 EMAIL_TO = os.getenv('EMAIL_TO')
 
-# Данные для Rambler (fallback)
+# Данные для Yandex (первый fallback)
+YANDEX_USER = os.getenv('YANDEX_USER')
+YANDEX_PASSWORD = os.getenv('YANDEX_PASSWORD')
+
+# Данные для Rambler (второй fallback)
 RAMBLER_USER = os.getenv('RAMBLER_USER')
 RAMBLER_PASSWORD = os.getenv('RAMBLER_PASSWORD')
 RAMBLER_SENDER_NAME = os.getenv('RAMBLER_SENDER_NAME')
@@ -127,7 +131,16 @@ def send_email_notification(messages_to_send):
     except Exception as e:
         print_message(f"Gmail exception: {e}")
 
-    # Если Gmail упал, а параметры для Rambler заполнены — пробуем Rambler
+    # Если Gmail упал, а параметры для Yandex заполнены — пробуем Yandex
+    if YANDEX_USER and YANDEX_PASSWORD:
+        ok, err = _send_via_smtp('smtp.yandex.ru', 465, True, YANDEX_USER, YANDEX_PASSWORD, YANDEX_USER, EMAIL_TO, msg)
+        if ok:
+            print_message("Уведомление на email успешно отправлено через Yandex.")
+            return True
+        else:
+            print_message(f"Yandex failed: {err}")
+
+    # Если и Yandex упал, а параметры для Rambler заполнены — пробуем Rambler
     if RAMBLER_USER and RAMBLER_PASSWORD and RAMBLER_SMTP_SERVER and RAMBLER_SMTP_PORT:
         use_ssl = False
         if RAMBLER_SMTP_USE_SSL:
